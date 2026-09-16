@@ -2,10 +2,12 @@
 import streamlit as st
 from datetime import datetime
 from pathlib import Path
-import sqlite3, hashlib
+import hashlib
+import requests
+import os
+from urllib.parse import quote
 
 APP_TITLE = "EKA DHANTHAYA MANDAP"
-DB = "edm_chandha.db"
 RECEIPT_DIR = Path("receipts")
 RECEIPT_DIR.mkdir(exist_ok=True)
 
@@ -132,20 +134,98 @@ footer { visibility:hidden; }
 
 def hash_pw(p): return hashlib.sha256(p.encode()).hexdigest()
 
-def db():
-    con = sqlite3.connect(DB)
-    con.row_factory = sqlite3.Row
-    con.execute("""CREATE TABLE IF NOT EXISTS donors(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        receipt_no TEXT, name TEXT, address TEXT, phone TEXT,
-        amount REAL, mode TEXT, status TEXT,
-        created_at TEXT, paid_at TEXT, whatsapp_sent INTEGER DEFAULT 0
-    )""")
-    con.commit()
-    return con
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+
+def sb_headers():
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+
+
+def sb_ready():
+    return bool(SUPABASE_URL and SUPABASE_KEY)
+
+
+def sb_get(path, params=None):
+    resp = requests.get(f"{SUPABASE_URL}/rest/v1/{path}", headers=sb_headers(), params=params, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def sb_post(path, payload):
+    resp = requests.post(f"{SUPABASE_URL}/rest/v1/{path}", headers=sb_headers(), json=payload, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def sb_patch(path, params, payload):
+    resp = requests.patch(f"{SUPABASE_URL}/rest/v1/{path}", headers=sb_headers(), params=params, json=payload, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_donors(status=None):
+    params = {"select": "*", "order": "id.desc"}
+    if status:
+        params["status"] = f"eq.{status}"
+    return sb_get("donors", params)
+
+
+def get_donor_by_receipt(receipt_no):
+    rows = sb_get("donors", {
+        "select": "*",
+        "receipt_no": f"eq.{receipt_no}",
+        "status": "eq.Paid",
+        "limit": "1",
+    })
+    return rows[0] if rows else None
+
+
+def next_receipt_number():
+    rows = sb_get("donors", {"select": "id", "order": "id.desc", "limit": "1"})
+    next_id = (int(rows[0]["id"]) + 1) if rows else 1
+    return f"EDM-{datetime.now().year}-{next_id:05d}"
+
+
+def save_donor(name, address, phone, amount, mode, status):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    receipt = next_receipt_number()
+    payload = {
+        "receipt_no": receipt,
+        "name": name.strip(),
+        "address": address.strip(),
+        "phone": phone.strip(),
+        "amount": float(amount),
+        "mode": mode,
+        "status": status,
+        "created_at": now,
+        "paid_at": now if status == "Paid" else None,
+        "sms_sent": False,
+    }
+    rows = sb_post("donors", payload)
+    return rows[0]
+
+
+def mark_paid(donor_id):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = sb_patch("donors", {"id": f"eq.{donor_id}"}, {"status": "Paid", "paid_at": now})
+    return rows[0] if rows else None
+
+
+def ensure_cloud_database():
+    if not sb_ready():
+        st.error("Cloud database is not configured. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Render Environment Variables.")
+        st.stop()
 
 def receipt_text(r):
-    return f"""EKA DHANTHAYA MANDAP
+    return f"""à¥¥ à¤¶à¥à¤°à¥€ à¤—à¤£à¥‡à¤¶à¤¾à¤¯ à¤¨à¤®à¤ƒ à¥¥
+
+EKA DHANTHAYA MANDAP
 ESTD. 2016
 GANESH CHANDHA RECEIPT
 ================================
@@ -159,8 +239,58 @@ Payment    : {r['mode']}
 Status     : PAID
 ================================
 Thank you for your contribution.
-GANAPATI BAPPA MORIYA ðŸ™
+à¥¥ à¤—à¤£à¤ªà¤¤à¤¿ à¤¬à¤¾à¤ªà¥à¤ªà¤¾ à¤®à¥‹à¤°à¤¯à¤¾ à¥¥ ðŸ™
 """
+
+
+
+def receipt_url(r):
+    base = os.getenv("APP_URL", "").strip().rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/?receipt={quote(str(r['receipt_no']))}"
+
+
+def sms_message(r):
+    url = receipt_url(r)
+    msg = (
+        f"ðŸ™ EKA DHANTHAYA MANDAP - ESTD. 2016\\n"
+        f"Chandha payment received successfully.\\n"
+        f"Name: {r['name']}\\n"
+        f"Amount: Rs. {r['amount']:.0f}\\n"
+        f"Receipt No: {r['receipt_no']}\\n"
+        f"Payment: {r['mode']}\\n"
+    )
+    if url:
+        msg += f"View / Download Receipt: {url}\\n"
+    msg += "Thank you for your contribution.\\nGanapati Bappa Morya ðŸ™"
+    return msg
+
+
+def receipt_card(r):
+    st.markdown(f"""
+    <div style="background:#FFF8E7;border:3px solid #D89B18;border-radius:18px;
+                padding:24px;max-width:760px;margin:10px auto;text-align:center;">
+      <div style="font-size:26px;color:#7A1F1F;font-weight:800;">à¥¥ à¤¶à¥à¤°à¥€ à¤—à¤£à¥‡à¤¶à¤¾à¤¯ à¤¨à¤®à¤ƒ à¥¥</div>
+      <div style="font-size:30px;color:#8A3B00;font-weight:800;">EKA DHANTHAYA MANDAP</div>
+      <div style="color:#7A4A16;font-weight:700;">ESTD. 2016</div>
+      <hr>
+      <div style="font-size:22px;color:#7A1F1F;font-weight:800;">GANESH CHANDHA RECEIPT</div>
+      <p><b>Receipt No:</b> {r['receipt_no']} &nbsp; | &nbsp; <b>Date:</b> {r['paid_at'] or r['created_at']}</p>
+      <p style="text-align:left;"><b>Name:</b> {r['name']}<br>
+      <b>Address:</b> {r['address']}<br>
+      <b>Phone:</b> {r['phone']}<br>
+      <b>Amount:</b> â‚¹{r['amount']:,.0f}<br>
+      <b>Payment Mode:</b> {r['mode']}<br>
+      <b>Status:</b> PAID</p>
+      <hr>
+      <div style="color:#7A1F1F;font-weight:800;">à¥¥ à¤—à¤£à¤ªà¤¤à¤¿ à¤¬à¤¾à¤ªà¥à¤ªà¤¾ à¤®à¥‹à¤°à¤¯à¤¾ à¥¥ ðŸ™</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+ADMIN_USERNAME = os.getenv("EDM_ADMIN_USERNAME", "EDM")
+ADMIN_PASSWORD = os.getenv("EDM_ADMIN_PASSWORD", "Edm@2016")
+
 
 def login():
     st.markdown("""
@@ -175,7 +305,7 @@ def login():
         p = st.text_input("Password", type="password", placeholder="Enter password")
         ok = st.form_submit_button("ðŸ” LOGIN", use_container_width=True)
     if ok:
-        if u == "EDM" and p == "Edm@2016":
+        if u.strip() == ADMIN_USERNAME and p == ADMIN_PASSWORD:
             st.session_state.auth = True
             st.rerun()
         else:
@@ -185,12 +315,31 @@ if "auth" not in st.session_state:
     st.session_state.auth = False
 
 if not st.session_state.auth:
+    receipt_no = st.query_params.get("receipt")
+    if receipt_no:
+        ensure_cloud_database()
+        r_public = get_donor_by_receipt(receipt_no)
+        if r_public:
+            st.markdown("""
+            <div style="text-align:center;padding:22px 0;">
+              <div style="font-size:46px;">ðŸ•‰ï¸</div>
+              <h1 style="color:#8A3B00;">EKA DHANTHAYA MANDAP</h1>
+              <p style="color:#7A5B32;font-weight:700;">Official Chandha Receipt</p>
+            </div>
+            """, unsafe_allow_html=True)
+            receipt_card(r_public)
+            st.info("You can take a screenshot or use your browser's Print / Save as PDF option.")
+            st.stop()
+        else:
+            st.error("Receipt not found or payment is not yet confirmed.")
+            st.stop()
     login()
     st.stop()
 
-con = db()
+ensure_cloud_database()
 
 # Sidebar
+st.sidebar.success("â˜ï¸ Cloud database connected")
 st.sidebar.markdown("""
 <div style="text-align:center;padding:8px 0 18px">
   <div style="font-size:46px">ðŸ•‰ï¸</div>
@@ -218,7 +367,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 if page == "ðŸ  Dashboard":
-    rows = con.execute("SELECT * FROM donors ORDER BY id DESC").fetchall()
+    rows = get_donors()
     paid = [r for r in rows if r["status"] == "Paid"]
     pending = [r for r in rows if r["status"] == "Not Paid"]
     collected = sum(r["amount"] for r in paid)
@@ -241,7 +390,7 @@ if page == "ðŸ  Dashboard":
 
 elif page == "âž• Add Chandha":
     st.markdown('<div class="section-title">âž• Add Chandha</div>', unsafe_allow_html=True)
-    st.caption("Enter donor details and select whether the contribution is paid or pending.")
+    st.caption("Enter donor details and select whether the contribution is paid or pending. Paid entries can be sent by free phone SMS.")
     with st.form("add"):
         c1, c2 = st.columns(2)
         with c1:
@@ -260,19 +409,20 @@ elif page == "âž• Add Chandha":
         elif not phone.strip().isdigit() or len(phone.strip()) != 10:
             st.error("Please enter a valid 10-digit Indian mobile number.")
         else:
-            cur = con.execute("SELECT COUNT(*) FROM donors").fetchone()[0] + 1
-            receipt = f"EDM-2026-{cur:05d}"
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            paid_at = now if status == "Paid" else None
-            con.execute("""INSERT INTO donors
-                (receipt_no,name,address,phone,amount,mode,status,created_at,paid_at)
-                VALUES(?,?,?,?,?,?,?,?,?)""",
-                (receipt, name.strip(), address.strip(), phone.strip(), amount, mode, status, now, paid_at))
-            con.commit()
+            try:
+                r = save_donor(name, address, phone, amount, mode, status)
+                receipt = r["receipt_no"]
+            except Exception as e:
+                st.error(f"Could not save donor: {e}")
+                st.stop()
             if status == "Paid":
-                r = con.execute("SELECT * FROM donors ORDER BY id DESC LIMIT 1").fetchone()
                 st.success(f"âœ… Payment recorded. Receipt {receipt} is ready.")
-                st.download_button("ðŸ§¾ Download Receipt", receipt_text(r).encode(), f"{receipt}.txt", "text/plain")
+                b1, b2 = st.columns(2)
+                with b1:
+                    st.download_button("ðŸ§¾ Download Receipt", receipt_text(r).encode(), f"{receipt}.txt", "text/plain")
+                with b2:
+                    st.markdown(sms_link(r, "ðŸ“± SEND SMS"), unsafe_allow_html=True)
+                st.caption("SMS is prepared in your phone's Messages app. You must press Send. The message includes the receipt link when APP_URL is configured.")
             else:
                 st.warning("â³ Saved to Pending Members.")
 
@@ -280,7 +430,7 @@ elif page in ["âœ… Paid Members", "â³ Pending Members"]:
     is_pending = page.startswith("â³")
     st.markdown(f'<div class="section-title">{"â³ Pending Members" if is_pending else "âœ… Paid Members"}</div>', unsafe_allow_html=True)
     search = st.text_input("ðŸ”Ž Search by name or phone", placeholder="Type a name or phone number...")
-    rows = con.execute("SELECT * FROM donors WHERE status=? ORDER BY id DESC", ("Not Paid" if is_pending else "Paid",)).fetchall()
+    rows = get_donors("Not Paid" if is_pending else "Paid")
     shown = 0
     for r in rows:
         if search and search.lower() not in (r["name"] + " " + r["phone"]).lower():
@@ -294,20 +444,23 @@ elif page in ["âœ… Paid Members", "â³ Pending Members"]:
             cols[3].markdown(f"**{r['mode']}**")
             if is_pending:
                 if cols[4].button("âœ… MARK PAID", key=f"pay{r['id']}"):
-                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    con.execute("UPDATE donors SET status='Paid', paid_at=? WHERE id=?", (now, r["id"]))
-                    con.commit()
-                    st.success(f"{r['name']} marked as paid. Receipt {r['receipt_no']} generated.")
-                    st.rerun()
+                    try:
+                        updated = mark_paid(r["id"])
+                        st.success(f"{r['name']} marked as paid. Receipt {r['receipt_no']} generated.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not update payment: {e}")
             else:
-                cols[4].download_button("ðŸ§¾ RECEIPT", receipt_text(r).encode(), f"{r['receipt_no']}.txt", "text/plain", key=f"rec{r['id']}")
+                with cols[4]:
+                    st.download_button("ðŸ§¾ RECEIPT", receipt_text(r).encode(), f"{r['receipt_no']}.txt", "text/plain", key=f"rec{r['id']}")
+                    st.markdown(sms_link(r), unsafe_allow_html=True)
     if shown == 0:
         st.info("No members found.")
 
 elif page == "ðŸ§¾ Receipts":
     st.markdown('<div class="section-title">ðŸ§¾ Receipts</div>', unsafe_allow_html=True)
     q = st.text_input("ðŸ”Ž Search receipt / name / phone", placeholder="EDM-2026-00001")
-    rows = con.execute("SELECT * FROM donors WHERE status='Paid' ORDER BY id DESC").fetchall()
+    rows = get_donors("Paid")
     shown = 0
     for r in rows:
         if q and q.lower() not in (r["receipt_no"] + " " + r["name"] + " " + r["phone"]).lower():
@@ -319,6 +472,7 @@ elif page == "ðŸ§¾ Receipts":
             b.markdown(f"ðŸ“ž {r['phone']}")
             c.markdown(f"â‚¹{r['amount']:,.0f}")
             d.download_button("â¬‡ï¸ Receipt", receipt_text(r).encode(), f"{r['receipt_no']}.txt", "text/plain", key=f"d{r['id']}")
+            st.markdown(sms_link(r), unsafe_allow_html=True)
     if shown == 0:
         st.info("No receipts found.")
 
@@ -326,5 +480,4 @@ st.markdown("""
 <div style="text-align:center;padding:30px 0 8px;color:#8A6A3B;font-size:12px">
 ðŸ™ Ganapati Bappa Moriya â€¢ EKA DHANTHAYA MANDAP â€¢ ESTD. 2016 ðŸ™
 </div>
-""", unsafe_allow_html=True)
-            
+""", unsafe_allow_html=True)        
