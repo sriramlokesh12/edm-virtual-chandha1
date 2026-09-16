@@ -241,7 +241,11 @@ Status     : PAID
 Thank you for your contribution.
 à¥¥ à¤—à¤£à¤ªà¤¤à¤¿ à¤¬à¤¾à¤ªà¥à¤ªà¤¾ à¤®à¥‹à¤°à¤¯à¤¾ à¥¥ ðŸ™
 """
-
+def receipt_url(r):
+    base = os.getenv("APP_URL", "").strip().rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/?receipt={quote(str(r['receipt_no']))}"
 
 def sms_message(r):
     url = receipt_url(r)
