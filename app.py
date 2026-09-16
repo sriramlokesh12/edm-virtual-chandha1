@@ -243,14 +243,6 @@ Thank you for your contribution.
 """
 
 
-
-def receipt_url(r):
-    base = os.getenv("APP_URL", "").strip().rstrip("/")
-    if not base:
-        return ""
-    return f"{base}/?receipt={quote(str(r['receipt_no']))}"
-
-
 def sms_message(r):
     url = receipt_url(r)
     msg = (
@@ -288,8 +280,16 @@ def receipt_card(r):
     </div>
     """, unsafe_allow_html=True)
 
-ADMIN_USERNAME = os.getenv("EDM_ADMIN_USERNAME", "EDM")
-ADMIN_PASSWORD = os.getenv("EDM_ADMIN_PASSWORD", "Edm@2016")
+
+def sms_link(r, label="ðŸ“± SEND SMS"):
+    phone = "91" + r["phone"].strip()
+    body = quote(sms_message(r))
+    return (
+        f'<a href="sms:{phone}?body={body}" '
+        f'style="display:inline-block;padding:10px 14px;background:#F57C00;'
+        f'color:white;text-decoration:none;border-radius:10px;font-weight:700;'
+        f'margin:3px 0;">{label}</a>'
+    )
 
 
 def login():
@@ -305,7 +305,7 @@ def login():
         p = st.text_input("Password", type="password", placeholder="Enter password")
         ok = st.form_submit_button("ðŸ” LOGIN", use_container_width=True)
     if ok:
-        if u.strip() == ADMIN_USERNAME and p == ADMIN_PASSWORD:
+        if u == "EDM" and p == "Edm@2016":
             st.session_state.auth = True
             st.rerun()
         else:
@@ -480,4 +480,4 @@ st.markdown("""
 <div style="text-align:center;padding:30px 0 8px;color:#8A6A3B;font-size:12px">
 ðŸ™ Ganapati Bappa Moriya â€¢ EKA DHANTHAYA MANDAP â€¢ ESTD. 2016 ðŸ™
 </div>
-""", unsafe_allow_html=True)        
+""", unsafe_allow_html=True)
