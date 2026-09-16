@@ -43,7 +43,7 @@ footer{visibility:hidden}
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 ADMIN_USERNAME = os.getenv("EDM_ADMIN_USERNAME", "EDM")
-ADMIN_PASSWORD = os.getenv("EDM_ADMIN_PASSWORD", "Edm@2016")
+ADMIN_PASSWORD = os.getenv("EDM_ADMIN_PASSWORD", "EDM@2026")
 
 
 def sb_headers():
